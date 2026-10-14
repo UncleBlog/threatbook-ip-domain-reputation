@@ -24,7 +24,19 @@
 
 > 默认不预置 API Key。首次启动为空，填写后点击「保存配置」即可长期生效。
 
-![界面预览](docs/screenshot.png)
+## 界面预览
+
+### IP 信誉查询
+
+![IP 信誉查询](docs/screenshot-ip.png)
+
+### 域名信誉查询
+
+![域名信誉查询](docs/screenshot-domain.png)
+
+### 文件信誉查询
+
+![文件信誉查询](docs/screenshot-file.png)
 
 ## 核心功能
 
@@ -118,7 +130,10 @@ outputs\微步IP域名文件信誉查询API调用_v<版本号>.exe
 │   ├── app.ico                        # 程序 / exe 图标
 │   └── app.png                        # README 与界面资源
 ├── docs/
-│   └── screenshot.png                 # 界面预览
+│   ├── screenshot.png                 # 界面预览（总览）
+│   ├── screenshot-ip.png              # IP 信誉查询截图
+│   ├── screenshot-domain.png          # 域名信誉查询截图
+│   └── screenshot-file.png            # 文件信誉查询截图
 ├── CHANGELOG.md
 ├── LICENSE
 └── README.md
