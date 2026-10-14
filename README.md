@@ -47,7 +47,7 @@
 前往 [Releases](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases/latest) 下载：
 
 ```text
-微步IP域名文件信誉查询API调用_v2.5.4.exe
+ThreatBookIPDomainFileReputation_v2.5.4.exe
 ```
 
 运行环境：Windows 10 / 11。
