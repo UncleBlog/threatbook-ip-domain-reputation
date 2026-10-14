@@ -12,6 +12,7 @@
     - IP信誉 / 域名信誉 / 文件信誉 三视图
     - 恶意结果红色标注，非恶意不着色
     - 支持浅色 / 暗色模式切换
+    - 本地缓存查看：按 IP / 域名 / 文件分类列出所有已缓存记录
     - 导出 IP CSV / 域名 CSV / 文件 CSV / JSON
     - 双击结果行打开情报详情页
 """
@@ -41,7 +42,7 @@ FILE_API_URL = "https://api.threatbook.cn/v3/file/report"
 BATCH_SIZE = 100          # IP/域名接口单次上限
 NETWORK_MAX_ATTEMPTS = 3  # 网络临时异常自动重试次数（含首次请求）
 APP_NAME = "微步IP/域名/文件信誉查询API调用"
-VERSION = "2.5.4"
+VERSION = "2.5.8"
 
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ThreatBookIPReputation")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -642,10 +643,12 @@ class App:
         self.cache.setdefault("domain", {})
         self.cache.setdefault("file", {})
         self.querying = False
+        self.cache_window = None
+        self.cache_trees = {}
 
         root.title(f"{APP_NAME} v{VERSION}")
-        root.geometry("1180x780")
-        root.minsize(980, 640)
+        root.geometry("1180x700")
+        root.minsize(980, 600)
         self._set_icon()
 
         self._build_style()
@@ -777,6 +780,18 @@ class App:
                                   selectforeground=t["select_fg"])
         for tv in (self.tree, self.domain_tree, self.file_tree):
             tv.tag_configure("mal", foreground=t["malice_fg"])
+        win = getattr(self, "cache_window", None)
+        if win is not None and win.winfo_exists():
+            try:
+                win.configure(bg=t["root_bg"])
+            except Exception:
+                pass
+        for tv in getattr(self, "cache_trees", {}).values():
+            try:
+                if tv.winfo_exists():
+                    tv.tag_configure("mal", foreground=t["malice_fg"])
+            except Exception:
+                pass
 
     def _toggle_theme(self):
         self._apply_theme()
@@ -798,36 +813,34 @@ class App:
 
     def _build_widgets(self):
         # ---------- 配置 ----------
-        top = ttk.LabelFrame(self.root, text="配置", padding=10)
+        top = ttk.LabelFrame(self.root, text="配置", padding=(10, 8))
         top.pack(fill="x", padx=12, pady=(12, 6))
 
-        ttk.Label(top, text="API Key：").grid(row=0, column=0, sticky="w")
+        def cfg_label(text):
+            return ttk.Label(top, text=text, width=10, anchor="w")
+
+        cfg_label("API Key：").grid(row=0, column=0, sticky="w")
         self.apikey_var = tk.StringVar(value=self.cfg.get("apikey", ""))
         self.apikey_entry = ttk.Entry(top, textvariable=self.apikey_var, width=70, show="*")
-        self.apikey_entry.grid(row=0, column=1, columnspan=4, sticky="we", padx=(4, 8))
+        self.apikey_entry.grid(row=0, column=1, sticky="we", padx=(0, 8))
         self.apikey_entry.bind("<Return>", lambda _e: self.save_cfg())
         self.show_key_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(top, text="显示", variable=self.show_key_var,
-                        command=self._toggle_key).grid(row=0, column=5, sticky="w")
+                        command=self._toggle_key).grid(row=0, column=2, sticky="w", padx=(0, 8))
+        ttk.Button(top, text="保存配置", command=self.save_cfg, width=10).grid(
+            row=0, column=3, sticky="e")
 
-        ttk.Label(top, text="返回语言：").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self.lang_var = tk.StringVar(value=self.cfg.get("lang", "zh"))
-        ttk.Radiobutton(top, text="中文", variable=self.lang_var, value="zh").grid(row=1, column=1, sticky="w", pady=(8, 0))
-        ttk.Radiobutton(top, text="English", variable=self.lang_var, value="en").grid(row=1, column=2, sticky="w", pady=(8, 0))
-
-        self.realtime_var = tk.BooleanVar(value=bool(self.cfg.get("realtime", False)))
-        ttk.Checkbutton(top, text="仅当前有效情报（不勾选=含历史过期情报）",
-                        variable=self.realtime_var).grid(row=1, column=3, columnspan=3, sticky="w", pady=(8, 0))
-
+        cfg_label("界面模式：").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        mode_row = ttk.Frame(top)
+        mode_row.grid(row=1, column=1, columnspan=3, sticky="w", pady=(8, 0))
         self.dark_var = tk.BooleanVar(value=bool(self.cfg.get("dark", False)))
-        ttk.Checkbutton(top, text="暗色模式", variable=self.dark_var,
-                        command=self._toggle_theme).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Label(top, text="首次打开为空；填写后点「保存配置」或按回车即可长期生效。").grid(
-            row=2, column=2, columnspan=4, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(mode_row, text="暗色模式", variable=self.dark_var,
+                        command=self._toggle_theme).pack(side="left")
 
-        ttk.Button(top, text="保存配置", command=self.save_cfg).grid(row=0, column=6, rowspan=3, padx=(8, 0), sticky="ns")
+        # 返回语言固定为中文。
+        self.lang_var = tk.StringVar(value="zh")
+
         top.columnconfigure(1, weight=1)
-        top.columnconfigure(3, weight=1)
 
         # ---------- 输入 ----------
         mid = ttk.LabelFrame(self.root, text="批量输入（IP、域名与文件哈希可混合；每行一个或用逗号/空格/分号分隔）", padding=10)
@@ -950,28 +963,253 @@ class App:
                   relief="sunken", padding=(8, 3)).grid(row=0, column=0, sticky="ew")
         ttk.Label(status_bar, textvariable=self.cache_info_var, anchor="center",
                   relief="sunken", padding=(8, 3)).grid(row=0, column=1, sticky="ns")
+        ttk.Button(status_bar, text="查看缓存", command=self.show_cache_viewer,
+                   style="Small.TButton", width=8).grid(row=0, column=2, sticky="ns", padx=(4, 2), pady=1)
         ttk.Button(status_bar, text="清空缓存", command=self.clear_cache,
-                   style="Small.TButton", width=8).grid(row=0, column=2, sticky="ns", padx=(4, 4), pady=1)
+                   style="Small.TButton", width=8).grid(row=0, column=3, sticky="ns", padx=(2, 4), pady=1)
         ttk.Label(status_bar, text="作者：Uncledavid", anchor="e",
-                  relief="sunken", padding=(8, 3)).grid(row=0, column=3, sticky="ns")
+                  relief="sunken", padding=(8, 3)).grid(row=0, column=4, sticky="ns")
         self._refresh_cache_status()
 
     # ---------------- 事件 ----------------
     def _toggle_key(self):
         self.apikey_entry.configure(show="" if self.show_key_var.get() else "*")
 
+    def _cache_counts(self):
+        """返回当前本地缓存各类型数量。"""
+        ip = self.cache.get("ip", {}) if isinstance(self.cache, dict) else {}
+        dm = self.cache.get("domain", {}) if isinstance(self.cache, dict) else {}
+        fm = self.cache.get("file", {}) if isinstance(self.cache, dict) else {}
+        return (
+            len(ip) if isinstance(ip, dict) else 0,
+            len(dm) if isinstance(dm, dict) else 0,
+            len(fm) if isinstance(fm, dict) else 0,
+        )
+
     def _refresh_cache_status(self):
         """刷新底部常驻的本地缓存统计。"""
         if not hasattr(self, "cache_info_var"):
             return
-        ip = self.cache.get("ip", {}) if isinstance(self.cache, dict) else {}
-        dm = self.cache.get("domain", {}) if isinstance(self.cache, dict) else {}
-        fm = self.cache.get("file", {}) if isinstance(self.cache, dict) else {}
-        n_ip = len(ip) if isinstance(ip, dict) else 0
-        n_dm = len(dm) if isinstance(dm, dict) else 0
-        n_fm = len(fm) if isinstance(fm, dict) else 0
+        n_ip, n_dm, n_fm = self._cache_counts()
         hits = getattr(self, "_cached_hits", 0)
         self.cache_info_var.set(f"本地缓存：IP {n_ip} / 域名 {n_dm} / 文件 {n_fm} ｜ 本次命中缓存：{hits}")
+
+    def _close_cache_viewer(self):
+        win = getattr(self, "cache_window", None)
+        if win is not None and win.winfo_exists():
+            win.destroy()
+        self.cache_window = None
+        self.cache_trees = {}
+
+    def show_cache_viewer(self):
+        """打开本地缓存查看窗口，按 IP / 域名 / 文件三个分类列出全部缓存。"""
+        win = getattr(self, "cache_window", None)
+        if win is not None and win.winfo_exists():
+            win.deiconify()
+            win.lift()
+            win.focus_force()
+            self._refresh_cache_window()
+            return
+
+        win = tk.Toplevel(self.root)
+        self.cache_window = win
+        win.title(f"本地缓存查看 - {APP_NAME} v{VERSION}")
+        win.geometry("1180x620")
+        win.minsize(820, 440)
+        win.transient(self.root)
+        win.protocol("WM_DELETE_WINDOW", self._close_cache_viewer)
+        self._build_cache_viewer(win)
+        self._refresh_cache_window()
+
+    def _build_cache_viewer(self, win):
+        header = ttk.Frame(win)
+        header.pack(fill="x", padx=12, pady=(12, 6))
+        self.cache_view_summary_var = tk.StringVar(value="")
+        ttk.Label(header, textvariable=self.cache_view_summary_var, anchor="w").pack(
+            side="left", fill="x", expand=True)
+        ttk.Label(header, text="双击记录可打开详情链接；Shift+滚轮可左右滚动").pack(
+            side="left", padx=(8, 10))
+        ttk.Button(header, text="刷新", command=self._refresh_cache_window,
+                   style="Small.TButton", width=8).pack(side="right")
+
+        notebook = ttk.Notebook(win)
+        notebook.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.cache_trees = {}
+
+        configs = {
+            "ip": {
+                "title": "IP 缓存",
+                "columns": ("resource", "verdict", "carrier", "location", "judgments",
+                            "tags", "update_time", "permalink"),
+                "heads": ("IP", "判定", "运营商", "地理位置", "威胁判定",
+                          "标签分类", "更新时间", "详情链接"),
+                "widths": (180, 70, 150, 230, 260, 260, 150, 300),
+                "align": {"resource": "w", "verdict": "center", "carrier": "w",
+                          "location": "w", "judgments": "w", "tags": "w",
+                          "update_time": "center", "permalink": "w"},
+            },
+            "domain": {
+                "title": "域名缓存",
+                "columns": ("resource", "verdict", "confidence", "severity", "judgments",
+                            "categories", "tags", "permalink"),
+                "heads": ("域名", "判定", "可信度", "严重级别", "威胁判定",
+                          "域名分类", "标签", "详情链接"),
+                "widths": (190, 70, 70, 80, 190, 180, 220, 300),
+                "align": {"resource": "w", "verdict": "center", "confidence": "center",
+                          "severity": "center", "judgments": "w", "categories": "w",
+                          "tags": "w", "permalink": "w"},
+            },
+            "file": {
+                "title": "文件缓存",
+                "columns": ("resource", "hash_type", "verdict", "threat_level", "score",
+                            "file_name", "file_type", "malware_type", "malware_family",
+                            "multi_engines", "whitelist", "permalink"),
+                "heads": ("哈希", "类型", "判定", "威胁等级", "评分", "文件名", "文件类型",
+                          "恶意类型", "家族", "引擎检出", "白名单", "详情链接"),
+                "widths": (260, 70, 70, 80, 60, 180, 90, 130, 150, 90, 70, 300),
+                "align": {"resource": "w", "hash_type": "center", "verdict": "center",
+                          "threat_level": "center", "score": "center", "file_name": "w",
+                          "file_type": "center", "malware_type": "w", "malware_family": "w",
+                          "multi_engines": "center", "whitelist": "center", "permalink": "w"},
+            },
+        }
+
+        for key, cfg in configs.items():
+            frame = ttk.Frame(notebook)
+            notebook.add(frame, text=cfg["title"])
+            self._create_cache_tree(frame, key, cfg)
+
+    def _create_cache_tree(self, parent, key, cfg):
+        tree = ttk.Treeview(parent, columns=cfg["columns"], show="headings", selectmode="browse")
+        for col, head, width in zip(cfg["columns"], cfg["heads"], cfg["widths"]):
+            anchor = cfg["align"].get(col, "w")
+            tree.heading(col, text=head, anchor=anchor)
+            tree.column(col, width=width, anchor=anchor, stretch=False)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+        tree.tag_configure("mal", foreground=self._theme.get("malice_fg", "#d93025"))
+        tree.bind("<Double-1>", lambda event, k=key: self._open_cache_permalink(event, k))
+        self._bind_horizontal_wheel(tree)
+        self.cache_trees[key] = tree
+
+    def _refresh_cache_window(self):
+        """刷新本地缓存查看窗口中的所有记录。"""
+        win = getattr(self, "cache_window", None)
+        if win is None or not win.winfo_exists():
+            return
+        n_ip, n_dm, n_fm = self._cache_counts()
+        if hasattr(self, "cache_view_summary_var"):
+            self.cache_view_summary_var.set(
+                f"本地缓存共 {n_ip + n_dm + n_fm} 条：IP {n_ip} / 域名 {n_dm} / 文件 {n_fm}")
+
+        trees = getattr(self, "cache_trees", {})
+        for tree in trees.values():
+            for iid in tree.get_children():
+                tree.delete(iid)
+
+        ip_tree = trees.get("ip")
+        if ip_tree is not None:
+            ip_cache = self.cache.get("ip", {}) if isinstance(self.cache, dict) else {}
+            if isinstance(ip_cache, dict):
+                for ip, item in sorted(ip_cache.items(), key=lambda kv: str(kv[0]).lower()):
+                    if not isinstance(item, dict):
+                        ip_tree.insert("", "end", values=(ip, "缓存数据异常", "-", "-", "-", "-", "-", ""))
+                        continue
+                    basic = item.get("basic") if isinstance(item.get("basic"), dict) else {}
+                    judgments = item.get("judgments") or []
+                    jt = "、".join(str(j) for j in judgments) if isinstance(judgments, list) else str(judgments)
+                    verdict = verdict_from_item(item)
+                    tag = ("mal",) if verdict == "恶意" else ()
+                    values = (
+                        ip,
+                        verdict,
+                        (basic.get("carrier") or "-"),
+                        fmt_location(basic.get("location")) or "-",
+                        jt or "-",
+                        fmt_tags_classes(item.get("tags_classes")) or "-",
+                        item.get("update_time") or "-",
+                        item.get("permalink") or "",
+                    )
+                    ip_tree.insert("", "end", values=values, tags=tag)
+
+        dm_tree = trees.get("domain")
+        if dm_tree is not None:
+            dm_cache = self.cache.get("domain", {}) if isinstance(self.cache, dict) else {}
+            if isinstance(dm_cache, dict):
+                for domain, item in sorted(dm_cache.items(), key=lambda kv: str(kv[0]).lower()):
+                    if not isinstance(item, dict):
+                        dm_tree.insert("", "end", values=(domain, "缓存数据异常", "-", "-", "-", "-", "-", ""))
+                        continue
+                    judgments = item.get("judgments") or []
+                    jt = "、".join(str(j) for j in judgments) if isinstance(judgments, list) else str(judgments)
+                    verdict = verdict_from_item(item)
+                    confidence = CONFIDENCE_ZH.get(
+                        str(item.get("confidence_level", "")).lower(), item.get("confidence_level") or "-")
+                    severity = SEVERITY_ZH.get(
+                        str(item.get("severity", "")).lower(), item.get("severity") or "-")
+                    tag = ("mal",) if verdict == "恶意" else ()
+                    values = (
+                        domain,
+                        verdict,
+                        confidence,
+                        severity,
+                        jt or "-",
+                        fmt_domain_categories(item.get("categories")) or "-",
+                        fmt_tags_classes(item.get("tags_classes")) or "-",
+                        item.get("permalink") or "",
+                    )
+                    dm_tree.insert("", "end", values=values, tags=tag)
+
+        fm_tree = trees.get("file")
+        if fm_tree is not None:
+            fm_cache = self.cache.get("file", {}) if isinstance(self.cache, dict) else {}
+            if isinstance(fm_cache, dict):
+                for resource, item in sorted(fm_cache.items(), key=lambda kv: str(kv[0]).lower()):
+                    if not isinstance(item, dict):
+                        fm_tree.insert("", "end", values=(resource, file_hash_type(resource).upper() or "-",
+                                                          "缓存数据异常", "-", "-", "-", "-", "-", "-", "-", "-", ""))
+                        continue
+                    summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+                    multi = item.get("multiengines") if isinstance(item.get("multiengines"), dict) else {}
+                    verdict = verdict_from_file_item(item)
+                    level = str(summary.get("threat_level", "")).lower()
+                    level_text = FILE_THREAT_LEVEL_ZH.get(level, summary.get("threat_level") or "未知")
+                    whitelist = "是" if summary.get("is_whitelist") is True else (
+                        "否" if summary.get("is_whitelist") is False else "-")
+                    tag = ("mal",) if verdict == "恶意" else ()
+                    values = (
+                        resource,
+                        file_hash_type(resource).upper() or "-",
+                        verdict,
+                        level_text,
+                        summary.get("threat_score", "-"),
+                        summary.get("file_name") or "-",
+                        summary.get("file_type") or "-",
+                        summary.get("malware_type") or "-",
+                        summary.get("malware_family") or "-",
+                        summary.get("multi_engines") or multi.get("detect_rate") or "-",
+                        whitelist,
+                        item.get("permalink") or "",
+                    )
+                    fm_tree.insert("", "end", values=values, tags=tag)
+
+    def _open_cache_permalink(self, _event, cache_type):
+        tree = getattr(self, "cache_trees", {}).get(cache_type)
+        if tree is None:
+            return
+        sel = tree.selection()
+        if not sel:
+            return
+        values = tree.item(sel[0], "values")
+        url = values[-1] if values else ""
+        if url and str(url).startswith("http"):
+            webbrowser.open(str(url))
 
     def _update_count(self, _event=None):
         items = parse_input(self.input_text.get("1.0", "end"))
@@ -982,7 +1220,7 @@ class App:
 
     def save_cfg(self, silent=False):
         cfg = {"apikey": self.apikey_var.get().strip(), "lang": self.lang_var.get(),
-               "realtime": bool(self.realtime_var.get()), "dark": bool(self.dark_var.get())}
+               "dark": bool(self.dark_var.get())}
         if save_config(cfg):
             self.cfg = cfg
             if not silent:
@@ -1001,7 +1239,7 @@ class App:
             return
 
         self.cfg = {"apikey": apikey, "lang": self.lang_var.get(),
-                    "realtime": bool(self.realtime_var.get()), "dark": bool(self.dark_var.get())}
+                    "dark": bool(self.dark_var.get())}
         save_config(self.cfg)
 
         self.querying = True
@@ -1012,7 +1250,7 @@ class App:
 
     def _query_worker(self, items):
         lang = self.lang_var.get()
-        realtime = bool(self.realtime_var.get())
+        realtime = False
         apikey = self.apikey_var.get().strip()
         total = len(items)
         done = 0
@@ -1122,17 +1360,17 @@ class App:
 
             save_cache(self.cache)
             self.root.after(0, self._refresh_cache_status)
+            self.root.after(0, self._refresh_cache_window)
             self.root.after(0, self._on_query_done, None)
         except Exception as e:  # noqa: BLE001
             save_cache(self.cache)
             self.root.after(0, self._refresh_cache_status)
+            self.root.after(0, self._refresh_cache_window)
             self.root.after(0, self._on_query_done, str(e))
 
     def clear_cache(self):
         """清空本地结果缓存，并删除缓存文件。"""
-        n_ip = len(self.cache.get("ip", {}))
-        n_dm = len(self.cache.get("domain", {}))
-        n_fm = len(self.cache.get("file", {}))
+        n_ip, n_dm, n_fm = self._cache_counts()
         n = n_ip + n_dm + n_fm
         if n == 0:
             messagebox.showinfo(APP_NAME, "本地缓存已经是空的。")
@@ -1147,6 +1385,7 @@ class App:
         clear_cache_file()
         self._cached_hits = 0
         self._refresh_cache_status()
+        self._refresh_cache_window()
         self.status_var.set(f"本地缓存已清空（{n} 条）")
 
     def _on_query_done(self, error):

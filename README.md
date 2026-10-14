@@ -6,9 +6,9 @@
 
 **Windows 桌面端 · 批量 IP / 域名 / 文件信誉查询工具**
 
-基于微步在线 ThreatBook API 构建，支持本地缓存、暗色模式、IP / 域名 / 文件哈希混合查询与结果导出。
+基于微步在线 ThreatBook API 构建，支持本地缓存查看、暗色模式、IP / 域名 / 文件哈希混合查询与结果导出。
 
-[![Release](https://img.shields.io/badge/release-v2.5.4-2563eb?style=for-the-badge)](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases)
+[![Release](https://img.shields.io/badge/release-v2.5.8-2563eb?style=for-the-badge)](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=for-the-badge&logo=windows)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.11-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-16a34a?style=for-the-badge)](LICENSE)
@@ -20,7 +20,7 @@
 ## 项目简介
 
 这是一个面向安全运营、威胁情报分析和日常排查场景的 Windows GUI 工具。  
-它把微步在线的 IP 信誉接口、失陷检测接口（`/v3/scene/dns`）与文件报告接口（`/v3/file/report`）整合到一个轻量界面中，支持 IP、域名与文件哈希混合批量查询，并把常用结果美化、缓存和导出，已查询过的 IP / 域名 / 文件哈希直接读取本地缓存，避免重复消耗 API 额度。
+它把微步在线的 IP 信誉接口、失陷检测接口（`/v3/scene/dns`）与文件报告接口（`/v3/file/report`）整合到一个轻量界面中，支持 IP、域名与文件哈希混合批量查询，并把常用结果美化、缓存和导出。已查询过的 IP / 域名 / 文件哈希会直接读取本地缓存，避免重复消耗 API 额度；新增的本地缓存查看窗口可以按类型浏览全部缓存记录，也可以随时一键清空。配置模块也已精简，只保留 API Key 与暗色模式，减少无效选项带来的干扰。
 
 > 默认不预置 API Key。首次启动为空，填写后点击「保存配置」即可长期生效。
 
@@ -38,19 +38,25 @@
 
 ![文件信誉查询](docs/screenshot-file.png)
 
+### 本地缓存查看
+
+![本地缓存查看](docs/screenshot-cache-viewer.png)
+
 ## 核心功能
 
 | 功能 | 说明 |
 |---|---|
 | 🔍 IP / 域名 / 文件混合查询 | 自动识别 IP、域名、MD5、SHA1、SHA256，支持逗号、空格、分号或换行分隔 |
 | ⚡ 本地结果缓存 | 已查询过的 IP / 域名 / 文件哈希直接读取本地缓存，避免重复消耗 API 额度 |
+| 🗂️ 本地缓存查看 | 底部「查看缓存」打开独立窗口，按 IP / 域名 / 文件标签页列出全部本地缓存，可刷新并双击查看详情链接 |
 | 🎯 信誉结果聚焦 | IP 仅展示 basic、is_malicious、judgments、tags_classes、permalink 等核心字段 |
 | 🌐 域名失陷检测 | 调用 `/v3/scene/dns`，展示判定、可信度、严重级别、威胁类型、域名分类与标签 |
 | 🧬 文件信誉查询 | 调用 `/v3/file/report`，支持 MD5 / SHA1 / SHA256，展示威胁等级、评分、文件名、类型、家族与引擎检出率 |
 | 🔴 恶意标红 | 仅对恶意结果使用红色标注，非恶意结果保持清晰可读 |
 | 🌙 暗色模式 | 深浅主题一键切换，并优化悬停与选中状态对比度 |
 | 📊 批量导出 | 支持导出 IP 结果 CSV、域名结果 CSV 与 JSON |
-| 🧹 缓存管理 | 底部状态栏常驻显示 IP / 域名 / 文件缓存数量与命中次数，并支持一键清空缓存 |
+| 🧹 缓存管理 | 底部状态栏常驻显示 IP / 域名 / 文件缓存数量与命中次数，清空缓存入口紧凑常驻 |
+| 🧭 配置精简 | 删除返回语言、仅当前有效情报等臃肿配置，仅保留 API Key 与界面模式；语言固定中文，选项排列保持一致 |
 | 🧾 中文错误码 | 微步 `response_code` 与常见 `verbose_msg` 自动转成中文，详情列更易读 |
 | 🖥️ 单文件 EXE | 无需安装 Python，下载后直接运行 |
 
@@ -59,7 +65,7 @@
 前往 [Releases](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases/latest) 下载：
 
 ```text
-ThreatBookIPDomainFileReputation_v2.5.4.exe
+ThreatBookIPDomainFileReputation_v2.5.8.exe
 ```
 
 运行环境：Windows 10 / 11。
@@ -133,7 +139,8 @@ outputs\微步IP域名文件信誉查询API调用_v<版本号>.exe
 │   ├── screenshot.png                 # 界面预览（总览）
 │   ├── screenshot-ip.png              # IP 信誉查询截图
 │   ├── screenshot-domain.png          # 域名信誉查询截图
-│   └── screenshot-file.png            # 文件信誉查询截图
+│   ├── screenshot-file.png            # 文件信誉查询截图
+│   └── screenshot-cache-viewer.png     # 本地缓存查看截图
 ├── CHANGELOG.md
 ├── LICENSE
 └── README.md
