@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.4.0
+
+- 域名查询接口由 `/v3/domain/query` 替换为 `/v3/scene/dns` 失陷检测接口。
+- 域名改为批量查询，单次最多 100 个，减少 API 调用次数。
+- 域名结果改为展示 `is_malicious`、`confidence_level`、`severity`、`judgments`、`tags_classes`、`categories`、`permalink`。
+- 域名视图与 CSV 导出改为域名信誉结果，移除旧的 samples 样本明细展示。
+- 自动丢弃旧版 `domain/query` 域名缓存，避免结构不兼容导致结果误读。
+
 ## v2.3.3
 
 - 修复 API Key 保存后重启不自动加载的问题。

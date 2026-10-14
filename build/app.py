@@ -7,11 +7,12 @@
     - 默认不预置 API Key，可修改 / 保存 API Key
     - 批量混合查询 IP 与域名（自动识别类型）
     - IP:  调用 IP 信誉接口，展示 basic / is_malicious / judgments / tags_classes / permalink
-    - 域名: 调用域名分析接口，重点展示 samples（相关样本）
-    - IP样本信誉 / 域名样本信誉 双视图
+    - 域名: 调用 /v3/scene/dns 失陷检测接口，展示 is_malicious / confidence_level /
+            severity / judgments / tags_classes / categories / permalink
+    - IP信誉 / 域名信誉 双视图
     - 恶意结果红色标注，非恶意不着色
     - 支持浅色 / 暗色模式切换
-    - 导出 CSV / 样本 CSV / JSON
+    - 导出 IP CSV / 域名 CSV / JSON
     - 双击结果行打开情报详情页
 """
 
@@ -32,11 +33,11 @@ from tkinter import ttk, messagebox, filedialog
 from tkinter.scrolledtext import ScrolledText
 
 IP_API_URL = "https://api.threatbook.cn/v3/scene/ip_reputation"
-DOMAIN_API_URL = "https://api.threatbook.cn/v3/domain/query"
+DOMAIN_API_URL = "https://api.threatbook.cn/v3/scene/dns"
 
 BATCH_SIZE = 100          # IP 接口单次上限
 APP_NAME = "微步IP/域名信誉查询API调用"
-VERSION = "2.3.3"
+VERSION = "2.4.0"
 
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ThreatBookIPReputation")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -86,6 +87,22 @@ THREAT_LEVEL_ZH = {
     "clean": "安全",
     "unknown": "未知",
     "": "未知",
+}
+
+CONFIDENCE_ZH = {
+    "low": "低",
+    "medium": "中",
+    "high": "高",
+    "": "-",
+}
+
+SEVERITY_ZH = {
+    "critical": "严重",
+    "high": "高",
+    "medium": "中",
+    "low": "低",
+    "info": "无威胁",
+    "": "-",
 }
 
 # 浅色 / 暗色主题调色板（保证底色与字体颜色对比明显）
@@ -171,6 +188,10 @@ def load_cache():
             if isinstance(data, dict):
                 ip = data.get("ip") if isinstance(data.get("ip"), dict) else {}
                 dm = data.get("domain") if isinstance(data.get("domain"), dict) else {}
+                # 旧版域名缓存来自 /v3/domain/query（含 samples），与 scene/dns
+                # 返回结构不同，直接丢弃让这些域名重新按新接口查询。
+                dm = {k: v for k, v in dm.items()
+                      if isinstance(v, dict) and "is_malicious" in v}
                 return {"ip": ip, "domain": dm}
     except Exception:
         pass
@@ -274,22 +295,25 @@ def query_ips(ips, apikey, lang="zh", realtime=False, timeout=30):
     return data
 
 
-def query_domain(domain, apikey, lang="zh", timeout=30):
-    """查询单个域名（域名接口不支持批量）。"""
-    params = {"resource": domain, "apikey": apikey, "lang": lang}
+def query_scene_dns(resources, apikey, lang="zh", realtime=False, timeout=30):
+    """调用失陷检测接口 /v3/scene/dns（<=100 批量）。
+
+    返回 (ips_map, domains_map)，两者均为 {资源: 结果}。
+    """
+    params = {
+        "resource": ",".join(resources),
+        "apikey": apikey,
+        "lang": lang,
+        "realtime_verdict": "true" if realtime else "false",
+    }
     resp = requests.get(DOMAIN_API_URL, params=params, timeout=timeout)
     resp.raise_for_status()
     payload = resp.json()
-    _raise_api_error(payload, "域名分析")
+    _raise_api_error(payload, "失陷检测")
     data = payload.get("data", {}) or {}
-    if domain in data:
-        return data[domain]
-    for k, v in data.items():
-        if str(k).lower() == domain.lower():
-            return v
-    if len(data) == 1:
-        return next(iter(data.values()))
-    return None
+    ips = data.get("ips") if isinstance(data.get("ips"), dict) else {}
+    domains = data.get("domains") if isinstance(data.get("domains"), dict) else {}
+    return ips, domains
 
 
 # ----------------------------------------------------------------------------
@@ -335,25 +359,32 @@ def verdict_from_judgments(judgments):
     return "非恶意"
 
 
-def parse_samples(data):
-    """从域名结果中提取样本列表，返回标准化 dict 列表。"""
-    samples = data.get("samples") if isinstance(data, dict) else None
-    if not isinstance(samples, list):
-        return []
-    out = []
-    for s in samples:
-        if not isinstance(s, dict):
-            continue
-        out.append({
-            "sha256": s.get("sha256", ""),
-            "scan_time": s.get("scan_time", ""),
-            "ratio": s.get("ratio", ""),
-            "malware_type": s.get("malware_type", ""),
-            "malware_family": s.get("malware_family", ""),
-            "threat_level": THREAT_LEVEL_ZH.get(str(s.get("threat_level", "")).lower(),
-                                                s.get("threat_level", "")),
-        })
-    return out
+def fmt_domain_categories(categories):
+    """格式化 scene/dns 返回的域名分类。"""
+    if not isinstance(categories, dict):
+        return ""
+    first = categories.get("first_cats")
+    second = categories.get("second_cats")
+    parts = []
+    if isinstance(first, (list, tuple)):
+        parts.extend(str(x) for x in first if x)
+    elif first:
+        parts.append(str(first))
+    if second and str(second) not in parts:
+        parts.append(str(second))
+    return " / ".join(parts)
+
+
+def verdict_from_item(item):
+    """优先按接口 is_malicious 判定，缺失时回退到 judgments。"""
+    if not isinstance(item, dict):
+        return "未知"
+    is_mal = item.get("is_malicious")
+    if is_mal is True:
+        return "恶意"
+    if is_mal is False:
+        return "非恶意"
+    return verdict_from_judgments(item.get("judgments") or [])
 
 
 # ----------------------------------------------------------------------------
@@ -365,7 +396,6 @@ class App:
         self.cfg = load_config()
         self.results = {}     # 资源 -> {"type":..., "data":...}
         self.row_order = []
-        self.samples = []     # [{resource, sha256, ...}]
         self.cache = load_cache()   # 本地结果缓存 {"ip": {...}, "domain": {...}}
         self.querying = False
 
@@ -458,7 +488,7 @@ class App:
                                   insertbackground=t["insert"],
                                   selectbackground=t["select_bg"],
                                   selectforeground=t["select_fg"])
-        for tv in (self.tree, self.sample_tree):
+        for tv in (self.tree, self.domain_tree):
             tv.tag_configure("mal", foreground=t["malice_fg"])
 
     def _toggle_theme(self):
@@ -499,7 +529,7 @@ class App:
         ttk.Radiobutton(top, text="English", variable=self.lang_var, value="en").grid(row=1, column=2, sticky="w", pady=(8, 0))
 
         self.realtime_var = tk.BooleanVar(value=bool(self.cfg.get("realtime", False)))
-        ttk.Checkbutton(top, text="仅当前有效情报（不勾选=含历史过期情报，仅对 IP 生效）",
+        ttk.Checkbutton(top, text="仅当前有效情报（不勾选=含历史过期情报）",
                         variable=self.realtime_var).grid(row=1, column=3, columnspan=3, sticky="w", pady=(8, 0))
 
         self.dark_var = tk.BooleanVar(value=bool(self.cfg.get("dark", False)))
@@ -525,7 +555,7 @@ class App:
         self.query_btn.pack(side="left")
         ttk.Button(btns, text="清空输入", command=lambda: self.input_text.delete("1.0", "end")).pack(side="left", padx=6)
         ttk.Button(btns, text="导出 IP 结果 CSV", command=self.export_csv).pack(side="left", padx=6)
-        ttk.Button(btns, text="导出域名样本 CSV", command=self.export_samples_csv).pack(side="left", padx=6)
+        ttk.Button(btns, text="导出域名结果 CSV", command=self.export_domains_csv).pack(side="left", padx=6)
         ttk.Button(btns, text="导出 JSON", command=self.export_json).pack(side="left", padx=6)
         self.count_label = ttk.Label(btns, text="待查询：0 个（IP 0 / 域名 0）")
         self.count_label.pack(side="right")
@@ -535,8 +565,8 @@ class App:
         pane = ttk.Panedwindow(self.root, orient="vertical")
         pane.pack(fill="both", expand=True, padx=12, pady=(6, 4))
 
-        # 上：IP样本信誉（仅展示 IP 查询结果）
-        res_frame = ttk.LabelFrame(pane, text="IP样本信誉（仅展示 IP 查询结果，双击打开情报详情页）", padding=8)
+        # 上：IP信誉（仅展示 IP 查询结果）
+        res_frame = ttk.LabelFrame(pane, text="IP信誉（仅展示 IP 查询结果，双击打开情报详情页）", padding=8)
         pane.add(res_frame, weight=2)
 
         res_cols = ("resource", "verdict", "carrier", "location", "judgments", "permalink")
@@ -561,33 +591,37 @@ class App:
         res_frame.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self.on_resource_double_click)
 
-        # 下：域名样本信誉（仅展示域名样本查询结果）
-        smp_frame = ttk.LabelFrame(pane, text="域名样本信誉（仅展示域名样本查询结果，双击打开域名情报详情页）", padding=8)
+        # 下：域名信誉（scene/dns 失陷检测，仅展示域名查询结果）
+        smp_frame = ttk.LabelFrame(
+            pane,
+            text="域名信誉（失陷检测 / scene/dns，仅展示域名查询结果，双击打开域名情报详情页）",
+            padding=8,
+        )
         pane.add(smp_frame, weight=3)
 
-        smp_cols = ("resource", "verdict", "judgments", "sha256", "scan_time", "ratio",
-                    "malware_type", "malware_family", "threat_level")
-        smp_heads = ("域名", "判定", "威胁判定", "SHA256", "检测时间", "检出率",
-                     "恶意类型", "恶意家族", "威胁等级")
-        smp_widths = (170, 70, 200, 470, 140, 70, 130, 130, 80)
-        smp_align = {"resource": "w", "verdict": "center", "judgments": "w",
-                     "sha256": "w", "scan_time": "center", "ratio": "center",
-                     "malware_type": "w", "malware_family": "w", "threat_level": "center"}
+        dm_cols = ("resource", "verdict", "confidence", "severity", "judgments",
+                   "categories", "tags", "permalink")
+        dm_heads = ("域名", "判定", "可信度", "严重级别", "威胁判定", "域名分类", "标签", "详情链接")
+        dm_widths = (170, 70, 70, 80, 190, 180, 220, 300)
+        dm_align = {"resource": "w", "verdict": "center", "confidence": "center",
+                    "severity": "center", "judgments": "w", "categories": "w",
+                    "tags": "w", "permalink": "w"}
 
-        self.sample_tree = ttk.Treeview(smp_frame, columns=smp_cols, show="headings", selectmode="browse")
-        for c, h, w in zip(smp_cols, smp_heads, smp_widths):
-            self.sample_tree.heading(c, text=h, anchor=smp_align[c])
-            self.sample_tree.column(c, width=w, anchor=smp_align[c], stretch=(c in ("sha256",)))
+        self.domain_tree = ttk.Treeview(smp_frame, columns=dm_cols, show="headings", selectmode="browse")
+        for c, h, w in zip(dm_cols, dm_heads, dm_widths):
+            self.domain_tree.heading(c, text=h, anchor=dm_align[c])
+            self.domain_tree.column(c, width=w, anchor=dm_align[c],
+                                    stretch=(c in ("judgments", "categories", "tags", "permalink")))
 
-        svs = ttk.Scrollbar(smp_frame, orient="vertical", command=self.sample_tree.yview)
-        shs = ttk.Scrollbar(smp_frame, orient="horizontal", command=self.sample_tree.xview)
-        self.sample_tree.configure(yscrollcommand=svs.set, xscrollcommand=shs.set)
-        self.sample_tree.grid(row=0, column=0, sticky="nsew")
+        svs = ttk.Scrollbar(smp_frame, orient="vertical", command=self.domain_tree.yview)
+        shs = ttk.Scrollbar(smp_frame, orient="horizontal", command=self.domain_tree.xview)
+        self.domain_tree.configure(yscrollcommand=svs.set, xscrollcommand=shs.set)
+        self.domain_tree.grid(row=0, column=0, sticky="nsew")
         svs.grid(row=0, column=1, sticky="ns")
         shs.grid(row=1, column=0, sticky="ew")
         smp_frame.rowconfigure(0, weight=1)
         smp_frame.columnconfigure(0, weight=1)
-        self.sample_tree.bind("<Double-1>", self.on_sample_double_click)
+        self.domain_tree.bind("<Double-1>", self.on_domain_double_click)
 
         # 底部状态栏：查询状态 + 本地缓存统计 + 清空缓存 + 作者署名
         self.status_var = tk.StringVar(value="就绪")
@@ -690,23 +724,40 @@ class App:
                 self.root.after(0, self.status_var.set,
                                 f"查询中 ... {done}/{total}（缓存命中 {self._cached_hits}）")
 
-            # ---- 域名：逐个查询，命中缓存直接展示 ----
+            # ---- 域名：命中缓存直接展示，未命中批量调用 scene/dns ----
+            domain_miss = []
             for d in domains:
                 if d in self.cache["domain"]:
                     self._cached_hits += 1
                     self.root.after(0, self._add_domain_row, d, self.cache["domain"][d])
+                    done += 1
                 else:
-                    try:
-                        item = query_domain(d, apikey, lang=lang)
+                    domain_miss.append(d)
+            if done:
+                self.root.after(0, self.status_var.set,
+                                f"查询中 ... {done}/{total}（缓存命中 {self._cached_hits}）")
+
+            for i in range(0, len(domain_miss), BATCH_SIZE):
+                batch = domain_miss[i:i + BATCH_SIZE]
+                try:
+                    _, dm = query_scene_dns(batch, apikey, lang=lang, realtime=realtime)
+                except Exception as de:  # 单个批次失败不影响其它
+                    text = str(de)
+                    if "没有访问接口权限" in text or "No Access to API Method" in text:
+                        self._permission_error = "失陷检测（scene/dns）接口"
+                    for d in batch:
+                        self.root.after(0, self._add_error_row, d, text)
+                        done += 1
+                else:
+                    lower = {str(k).lower(): v for k, v in dm.items()}
+                    for d in batch:
+                        item = dm.get(d)
+                        if item is None:
+                            item = lower.get(d.lower())
                         if item is not None:
                             self.cache["domain"][d] = item
                         self.root.after(0, self._add_domain_row, d, item)
-                    except Exception as de:  # 单个域名失败不影响其它
-                        text = str(de)
-                        if "没有访问接口权限" in text or "No Access to API Method" in text:
-                            self._permission_error = "域名分析接口"
-                        self.root.after(0, self._add_error_row, d, text)
-                done += 1
+                        done += 1
                 self.root.after(0, self.status_var.set,
                                 f"查询中 ... {done}/{total}（缓存命中 {self._cached_hits}）")
 
@@ -750,7 +801,7 @@ class App:
             cached = getattr(self, "_cached_hits", 0)
             self._refresh_cache_status()
             self.status_var.set(f"查询完成：共 {len(self.row_order)} 个（IP {n_ip} / 域名 {n_dm}），"
-                                f"样本 {len(self.samples)} 条，本地缓存命中 {cached} 个")
+                                f"本地缓存命中 {cached} 个")
             first = self.tree.get_children()
             if first:
                 self.tree.selection_set(first[0])
@@ -767,11 +818,10 @@ class App:
     def _clear_results(self):
         for i in self.tree.get_children():
             self.tree.delete(i)
-        for i in self.sample_tree.get_children():
-            self.sample_tree.delete(i)
+        for i in self.domain_tree.get_children():
+            self.domain_tree.delete(i)
         self.results = {}
         self.row_order = []
-        self.samples = []
         self._permission_error = None
         self._cached_hits = 0
         self._refresh_cache_status()
@@ -803,26 +853,23 @@ class App:
             return
         judgments = item.get("judgments") or []
         jt = "、".join(str(j) for j in judgments) if isinstance(judgments, list) else str(judgments)
-        verdict = verdict_from_judgments(judgments)
+        verdict = verdict_from_item(item)
+        confidence = CONFIDENCE_ZH.get(
+            str(item.get("confidence_level", "")).lower(), item.get("confidence_level") or "-")
+        severity = SEVERITY_ZH.get(
+            str(item.get("severity", "")).lower(), item.get("severity") or "-")
+        categories = fmt_domain_categories(item.get("categories")) or "-"
+        tags_text = fmt_tags_classes(item.get("tags_classes")) or "-"
 
-        samples = parse_samples(item)
         self.results[domain] = {"type": "domain", "data": item}
         self.row_order.append(domain)
-
-        if not samples:
-            self.sample_tree.insert("", "end", iid=f"smp::{domain}::0",
-                                    values=(domain, verdict, jt, "-", "-", "-", "-", "-", "-"))
-            return
-        for i, s in enumerate(samples):
-            row = {"resource": domain, **s}
-            self.samples.append(row)
-            level = s["threat_level"]
-            tags = ("mal",) if level == "恶意" else ()
-            self.sample_tree.insert("", "end", iid=f"smp::{domain}::{i}",
-                                    values=(domain, verdict, jt, s["sha256"], s["scan_time"],
-                                            s["ratio"], s["malware_type"], s["malware_family"],
-                                            s["threat_level"]),
-                                    tags=tags)
+        tags = ("mal",) if verdict == "恶意" else ()
+        self.domain_tree.insert(
+            "", "end", iid=f"dm::{domain}",
+            values=(domain, verdict, confidence, severity, jt, categories, tags_text,
+                    item.get("permalink") or ""),
+            tags=tags,
+        )
 
     def _add_error_row(self, resource, msg):
         self._refresh_cache_status()
@@ -833,9 +880,9 @@ class App:
             self.tree.insert("", "end", iid=f"res::{resource}",
                              values=(resource, "查询失败", "", "", short, ""))
         else:
-            self.sample_tree.insert("", "end", iid=f"smp::{resource}::err",
-                                    values=(resource, "查询失败", short,
-                                            "-", "-", "-", "-", "-", "-"))
+            self.domain_tree.insert("", "end", iid=f"dm::{resource}::err",
+                                    values=(resource, "查询失败", "-", "-", short,
+                                            "-", "-", "-"))
 
     def _open_permalink(self, resource):
         r = self.results.get(resource, {})
@@ -848,10 +895,10 @@ class App:
         if sel:
             self._open_permalink(self.tree.item(sel[0], "values")[0])
 
-    def on_sample_double_click(self, _event):
-        sel = self.sample_tree.selection()
+    def on_domain_double_click(self, _event):
+        sel = self.domain_tree.selection()
         if sel:
-            self._open_permalink(self.sample_tree.item(sel[0], "values")[0])
+            self._open_permalink(self.domain_tree.item(sel[0], "values")[0])
 
     # ---------------- 导出 ----------------
     def export_csv(self):
@@ -873,23 +920,23 @@ class App:
         except Exception as e:
             messagebox.showerror(APP_NAME, f"导出失败：{e}")
 
-    def export_samples_csv(self):
-        rows = self.sample_tree.get_children()
+    def export_domains_csv(self):
+        rows = self.domain_tree.get_children()
         if not rows:
-            messagebox.showinfo(APP_NAME, "当前没有域名样本数据可导出。")
+            messagebox.showinfo(APP_NAME, "当前没有域名结果可导出。")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".csv", filetypes=[("CSV 文件", "*.csv")],
-            initialfile=f"domain_samples_{datetime.now():%Y%m%d_%H%M%S}.csv")
+            initialfile=f"domain_results_{datetime.now():%Y%m%d_%H%M%S}.csv")
         if not path:
             return
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 w = csv.writer(f)
-                w.writerow(["域名", "判定", "威胁判定", "SHA256", "检测时间",
-                            "检出率", "恶意类型", "恶意家族", "威胁等级"])
+                w.writerow(["域名", "判定", "可信度", "严重级别", "威胁判定",
+                            "域名分类", "标签", "详情链接"])
                 for row in rows:
-                    w.writerow(self.sample_tree.item(row, "values"))
+                    w.writerow(self.domain_tree.item(row, "values"))
             self.status_var.set(f"已导出：{path}")
         except Exception as e:
             messagebox.showerror(APP_NAME, f"导出失败：{e}")

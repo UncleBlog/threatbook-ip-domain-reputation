@@ -8,7 +8,7 @@
 
 基于微步在线 ThreatBook API 构建，支持本地缓存、暗色模式、批量混合查询与结果导出。
 
-[![Release](https://img.shields.io/badge/release-v2.3.3-2563eb?style=for-the-badge)](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases)
+[![Release](https://img.shields.io/badge/release-v2.4.0-2563eb?style=for-the-badge)](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=for-the-badge&logo=windows)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.11-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-16a34a?style=for-the-badge)](LICENSE)
@@ -20,7 +20,7 @@
 ## 项目简介
 
 这是一个面向安全运营、威胁情报分析和日常排查场景的 Windows GUI 工具。  
-它把微步在线的 IP 信誉接口与域名分析接口整合到一个轻量界面中，支持 IP 与域名混合批量查询，并把常用结果美化、缓存和导出。
+它把微步在线的 IP 信誉接口与失陷检测接口（`/v3/scene/dns`）整合到一个轻量界面中，支持 IP 与域名混合批量查询，并把常用结果美化、缓存和导出。
 
 > 默认不预置 API Key。首次启动为空，填写后点击「保存配置」即可长期生效。
 
@@ -33,10 +33,10 @@
 | 🔍 IP / 域名混合查询 | 自动识别输入类型，支持逗号、空格、分号或换行分隔 |
 | ⚡ 本地结果缓存 | 已查询过的 IP / 域名直接读取本地缓存，避免重复消耗 API 额度 |
 | 🎯 信誉结果聚焦 | IP 仅展示 basic、is_malicious、judgments、tags_classes、permalink 等核心字段 |
-| 🌐 域名样本分析 | 重点展示域名关联 samples、SHA256、检出率、恶意家族与威胁等级 |
+| 🌐 域名失陷检测 | 调用 `/v3/scene/dns`，展示判定、可信度、严重级别、威胁类型、域名分类与标签 |
 | 🔴 恶意标红 | 仅对恶意结果使用红色标注，非恶意结果保持清晰可读 |
 | 🌙 暗色模式 | 深浅主题一键切换，并优化悬停与选中状态对比度 |
-| 📊 批量导出 | 支持导出 IP 结果 CSV、域名样本 CSV 与 JSON |
+| 📊 批量导出 | 支持导出 IP 结果 CSV、域名结果 CSV 与 JSON |
 | 🧹 缓存管理 | 底部状态栏常驻显示缓存数量，并支持一键清空缓存 |
 | 🖥️ 单文件 EXE | 无需安装 Python，下载后直接运行 |
 
@@ -45,7 +45,7 @@
 前往 [Releases](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases/latest) 下载：
 
 ```text
-微步IP域名信誉查询API调用_v2.3.3.exe
+微步IP域名信誉查询API调用_v2.4.0.exe
 ```
 
 运行环境：Windows 10 / 11。
@@ -74,10 +74,11 @@
 
 | 类型 | 接口 | 说明 |
 |---|---|---|
-| IP | `/v3/scene/ip_reputation` | 支持批量查询，单次建议不超过 100 个 |
-| 域名 | `/v3/domain/query` | 当前按单个域名查询 |
+| IP | `/v3/scene/ip_reputation` | IP 信誉查询，支持批量，单次建议不超过 100 个 |
+| 域名 | `/v3/scene/dns` | 失陷检测（scene/dns），支持 IP / 域名混合批量，单次最多 100 个 |
 
-> 域名接口需要在微步控制台为当前 API Key 开通对应权限，否则会返回权限错误。
+> 域名侧展示 `is_malicious`、`confidence_level`、`severity`、`judgments`、`tags_classes`、`categories`、`permalink`。  
+> 接口需要在微步控制台为当前 API Key 开通对应权限，否则会返回权限错误。
 
 ## 从源码构建
 
