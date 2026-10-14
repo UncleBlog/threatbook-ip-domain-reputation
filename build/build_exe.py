@@ -5,7 +5,7 @@
 用法（在 build 目录或项目根目录）：
     python build/build_exe.py
 生成：
-    outputs/微步IP域名信誉查询API调用_v<版本号>.exe
+    outputs/微步IP域名文件信誉查询API调用_v<版本号>.exe
 """
 import os
 import re
@@ -19,7 +19,7 @@ APP = os.path.join(HERE, "app.py")
 SPEC = os.path.join(HERE, "ThreatBookIPReputation.spec")
 DIST_EXE = os.path.join(HERE, "dist", "ThreatBookIPReputation.exe")
 OUT_DIR = os.path.join(ROOT, "outputs")
-BASE_NAME = "微步IP域名信誉查询API调用"  # Windows 文件名不能含 "/"
+BASE_NAME = "微步IP域名文件信誉查询API调用"  # Windows 文件名不能含 "/"
 
 
 def read_version():
