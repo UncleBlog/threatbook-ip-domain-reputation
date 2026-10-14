@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PyInstaller build artifacts
+build/build/
+build/dist/
+build/*.spec.bak
+
+# Runtime secrets / local data
+config.json
+cache.json
+
+# Local scratch and packaged outputs (releases are attached on GitHub)
+work/
+outputs/
+*.log
