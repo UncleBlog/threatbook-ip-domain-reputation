@@ -42,7 +42,7 @@ FILE_API_URL = "https://api.threatbook.cn/v3/file/report"
 BATCH_SIZE = 100          # IP/域名接口单次上限
 NETWORK_MAX_ATTEMPTS = 3  # 网络临时异常自动重试次数（含首次请求）
 APP_NAME = "微步IP/域名/文件信誉查询API调用"
-VERSION = "2.5.8"
+VERSION = "2.6.3"
 
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ThreatBookIPReputation")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -57,6 +57,77 @@ def resource_path(name):
 
 APP_ICON_ICO = resource_path("app.ico")
 APP_ICON_PNG = resource_path("app.png")
+_ICON_HANDLES = []
+
+
+def _set_native_window_icon(window):
+    """用 Win32 原生接口同步标题栏、窗口类和任务栏图标，避免回退到 Tk 默认羽毛图标。"""
+    if sys.platform != "win32" or not os.path.exists(APP_ICON_ICO):
+        return
+    hwnd = _get_toplevel_hwnd(window)
+    if not hwnd:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = wintypes.HANDLE
+        user32.LoadImageW.argtypes = [
+            wintypes.HINSTANCE,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p]
+        user32.SendMessageW.restype = ctypes.c_void_p
+
+        image_icon = 1
+        lr_loadfromfile = 0x00000010
+        wm_seticon = 0x0080
+        icon_small = 0
+        icon_big = 1
+
+        # 同时准备 16/32/48 尺寸；Windows 在高 DPI 下会按需选择，不再回退到 Python/Tk 图标。
+        handles = []
+        hicon_small = user32.LoadImageW(None, APP_ICON_ICO, image_icon, 16, 16, lr_loadfromfile)
+        hicon_big = (
+            user32.LoadImageW(None, APP_ICON_ICO, image_icon, 32, 32, lr_loadfromfile)
+            or user32.LoadImageW(None, APP_ICON_ICO, image_icon, 48, 48, lr_loadfromfile)
+            or user32.LoadImageW(None, APP_ICON_ICO, image_icon, 0, 0, lr_loadfromfile)
+        )
+        for handle in (hicon_small, hicon_big):
+            if handle:
+                handles.append(handle)
+                _ICON_HANDLES.append(handle)
+
+        if hicon_small:
+            user32.SendMessageW(hwnd, wm_seticon, ctypes.c_void_p(icon_small), hicon_small)
+        if hicon_big:
+            user32.SendMessageW(hwnd, wm_seticon, ctypes.c_void_p(icon_big), hicon_big)
+
+        # 同步窗口类图标，覆盖部分 Windows 版本的任务栏/Alt+Tab 图标缓存。
+        try:
+            if hasattr(user32, "SetClassLongPtrW"):
+                set_class_icon = user32.SetClassLongPtrW
+                set_class_icon.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+                set_class_icon.restype = ctypes.c_void_p
+            else:
+                set_class_icon = user32.SetClassLongW
+                set_class_icon.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+                set_class_icon.restype = ctypes.c_void_p
+            gclp_hicon = -14
+            gclp_hiconsm = -34
+            if hicon_small:
+                set_class_icon(hwnd, gclp_hiconsm, hicon_small)
+            if hicon_big:
+                set_class_icon(hwnd, gclp_hicon, hicon_big)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _set_app_user_model_id():
@@ -66,12 +137,224 @@ def _set_app_user_model_id():
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "ThreatBook.IPDomainQuery")
+            "Uncledavid.ThreatBook.Query")
     except Exception:
         pass
 
 # 默认不预置 API Key，需由用户在界面中填写并保存
 DEFAULT_API_KEY = ""
+
+
+def _enable_high_dpi_awareness():
+    """在创建 Tk 窗口前启用 Per-Monitor DPI V2，避免字体发虚。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        try:
+            # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+            return
+        except Exception:
+            pass
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _pick_font(root, candidates, fallback):
+    """优先选择系统内置的高质量 UI 字体，保证中文和高分屏显示清晰。"""
+    try:
+        installed = set(tkfont.families(root))
+        for name in candidates:
+            if name in installed:
+                return name
+    except Exception:
+        pass
+    return fallback
+
+
+def _setup_tk_fonts(root):
+    """按系统 DPI 调整 Tk 字体缩放，并把默认字体统一为高清 UI 字体。"""
+    family = _pick_font(
+        root,
+        ("Microsoft YaHei UI", "Segoe UI Variable Text", "Microsoft YaHei", "Segoe UI"),
+        "Microsoft YaHei UI",
+    )
+    try:
+        dpi = float(root.winfo_fpixels("1i"))
+        if dpi > 0:
+            root.tk.call("tk", "scaling", dpi / 72.0)
+    except Exception:
+        pass
+    for font_name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+        try:
+            tkfont.nametofont(font_name).configure(family=family, size=10)
+        except Exception:
+            pass
+    return family
+
+
+def _get_toplevel_hwnd(window):
+    """获取 Tk 顶层窗口对应的原生 HWND。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        return hwnd or window.winfo_id()
+    except Exception:
+        return None
+
+
+def _center_window(window, width, height, min_width=None, min_height=None):
+    """按屏幕可用区域设置窗口大小并居中，避免默认窗口过小或意外全屏。"""
+    try:
+        window.update_idletasks()
+        screen_w = int(window.winfo_screenwidth())
+        screen_h = int(window.winfo_screenheight())
+        try:
+            dpi_scale = max(1.0, float(window.winfo_fpixels("1i")) / 96.0)
+        except Exception:
+            dpi_scale = 1.0
+
+        # Tk 的 geometry 单位在高 DPI 机器上会被系统缩放；按 DPI 换算后，
+        # 参数中的宽高更接近用户看到的实际窗口尺寸。
+        width_cfg = int(int(width) * dpi_scale)
+        height_cfg = int(int(height) * dpi_scale)
+        safe_w = max(760, screen_w - int(100 * dpi_scale))
+        safe_h = max(540, screen_h - int(120 * dpi_scale))
+        width_cfg = min(width_cfg, safe_w)
+        height_cfg = min(height_cfg, safe_h)
+        if min_width is not None:
+            width_cfg = max(width_cfg, min(int(int(min_width) * dpi_scale), safe_w))
+        if min_height is not None:
+            height_cfg = max(height_cfg, min(int(int(min_height) * dpi_scale), safe_h))
+        x = max(0, (screen_w - width_cfg) // 2)
+        y = max(0, (screen_h - height_cfg) // 2)
+        window.geometry(f"{width_cfg}x{height_cfg}+{x}+{y}")
+        if min_width is not None and min_height is not None:
+            window.minsize(
+                min(int(int(min_width) * dpi_scale), safe_w),
+                min(int(int(min_height) * dpi_scale), safe_h),
+            )
+    except Exception:
+        pass
+
+
+def _set_acrylic_fallback(hwnd, dark, enabled=True):
+    """Win10/部分 Win11 环境下的 Acrylic 回退实现。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class ACCENTPOLICY(ctypes.Structure):
+            _fields_ = [
+                ("AccentState", ctypes.c_int),
+                ("AccentFlags", ctypes.c_int),
+                ("GradientColor", ctypes.c_uint),
+                ("AnimationId", ctypes.c_int),
+            ]
+
+        class WINCOMPATTRDATA(ctypes.Structure):
+            _fields_ = [
+                ("Attribute", ctypes.c_int),
+                ("Data", ctypes.c_void_p),
+                ("SizeOfData", ctypes.c_size_t),
+            ]
+
+        accent = ACCENTPOLICY()
+        accent.AccentState = 4 if enabled else 0  # ACRYLIC / DISABLED
+        accent.AccentFlags = 2 if enabled else 0
+        accent.GradientColor = (0xCC1F1F1F if dark else 0xCCF3F3F3) if enabled else 0
+        data = WINCOMPATTRDATA()
+        data.Attribute = 19  # WCA_ACCENT_POLICY
+        data.Data = ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p)
+        data.SizeOfData = ctypes.sizeof(accent)
+        ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data))
+    except Exception:
+        pass
+
+
+def _set_dwm_backdrop(hwnd, dark=False, enabled=True):
+    """Enable or temporarily disable the Mica/Acrylic backdrop."""
+    if not hwnd:
+        return
+    applied = False
+    try:
+        import ctypes
+
+        # DWMWA_SYSTEMBACKDROP_TYPE: 1=None, 3=Acrylic
+        backdrop = ctypes.c_int(3 if enabled else 1)
+        applied = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 38, ctypes.byref(backdrop), ctypes.sizeof(backdrop)
+        ) == 0
+    except Exception:
+        applied = False
+
+    if enabled and not applied:
+        _set_acrylic_fallback(hwnd, dark, True)
+    elif not enabled:
+        _set_acrylic_fallback(hwnd, dark, False)
+
+
+def _apply_windows_material(window, dark=False):
+    """为窗口应用 Windows 11 圆角、暗色标题栏与 Acrylic/Mica 背景。"""
+    hwnd = _get_toplevel_hwnd(window)
+    if not hwnd:
+        return
+    try:
+        window._tb_hwnd = hwnd
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        value = ctypes.c_int(1 if dark else 0)
+        # DWMWA_USE_IMMERSIVE_DARK_MODE（新版本 20，旧版本 19）
+        for attr in (20, 19):
+            try:
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)
+                ) == 0:
+                    break
+            except Exception:
+                pass
+
+        # DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND
+        try:
+            corner = ctypes.c_int(2)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(corner), ctypes.sizeof(corner)
+            )
+        except Exception:
+            pass
+
+        # 标题栏与边框使用当前主题色，保持深色模式整体一致。
+        try:
+            caption_color = 0x001F1F1F if dark else 0x00F3F3F3
+            border_color = 0x003F3F3F if dark else 0x00D0D3D7
+            caption = ctypes.c_uint(caption_color)
+            border = ctypes.c_uint(border_color)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption)
+            )
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 34, ctypes.byref(border), ctypes.sizeof(border)
+            )
+        except Exception:
+            pass
+
+        _set_dwm_backdrop(hwnd, dark, enabled=True)
+    except Exception:
+        pass
 
 # 判定为恶意的威胁类型（英文 + 中文，lang=zh 时接口返回中文）
 MALICIOUS_JUDGMENTS = {
@@ -177,43 +460,43 @@ RESPONSE_VERBOSE_ZH = {
     "Query Timeout": "查询返回超时，请稍后重试或缩小查询范围",
 }
 
-# 浅色 / 暗色主题调色板（保证底色与字体颜色对比明显）
+# 浅色 / 暗色主题调色板（Windows 11 Acrylic / Mica 风格，保证底色与字体颜色对比明显）
 THEMES = {
     "light": {
-        "root_bg": "#eef0f3",
-        "panel_bg": "#f7f8fa",
+        "root_bg": "#f3f3f3",
+        "panel_bg": "#fbfbfb",
         "text_bg": "#ffffff",
-        "text_fg": "#1f2328",
+        "text_fg": "#1b1b1b",
         "field_bg": "#ffffff",
-        "field_fg": "#1f2328",
+        "field_fg": "#1b1b1b",
         "row_bg": "#ffffff",
-        "row_fg": "#1f2328",
-        "row_alt": "#eef1f5",
-        "heading_bg": "#dfe3e8",
-        "heading_fg": "#1f2328",
-        "select_bg": "#bcd6f7",
-        "select_fg": "#10233a",
-        "malice_fg": "#d32f2f",
-        "border": "#c4c9d0",
-        "insert": "#1f2328",
+        "row_fg": "#1b1b1b",
+        "row_alt": "#f6f7f9",
+        "heading_bg": "#ebedf0",
+        "heading_fg": "#1b1b1b",
+        "select_bg": "#cfe4ff",
+        "select_fg": "#003a70",
+        "malice_fg": "#c42b1c",
+        "border": "#d0d3d7",
+        "insert": "#1b1b1b",
     },
     "dark": {
-        "root_bg": "#17181b",
-        "panel_bg": "#1f2125",
-        "text_bg": "#232529",
-        "text_fg": "#f2f3f5",
-        "field_bg": "#2a2d32",
-        "field_fg": "#f2f3f5",
-        "row_bg": "#232529",
-        "row_fg": "#f2f3f5",
-        "row_alt": "#292c31",
-        "heading_bg": "#3a3e45",
+        "root_bg": "#202020",
+        "panel_bg": "#2b2b2b",
+        "text_bg": "#1f1f1f",
+        "text_fg": "#ffffff",
+        "field_bg": "#323232",
+        "field_fg": "#ffffff",
+        "row_bg": "#262626",
+        "row_fg": "#ffffff",
+        "row_alt": "#2d2d2d",
+        "heading_bg": "#343434",
         "heading_fg": "#ffffff",
-        "select_bg": "#3b6ea5",
-        "select_fg": "#ffffff",
-        "malice_fg": "#ff6b6b",
-        "border": "#3a3e45",
-        "insert": "#f2f3f5",
+        "select_bg": "#4cc2ff",
+        "select_fg": "#000000",
+        "malice_fg": "#ff99a4",
+        "border": "#3f3f3f",
+        "insert": "#ffffff",
     },
 }
 
@@ -645,15 +928,42 @@ class App:
         self.querying = False
         self.cache_window = None
         self.cache_trees = {}
+        self.font_family = _pick_font(
+            root,
+            ("Microsoft YaHei UI", "Segoe UI Variable Text", "Microsoft YaHei", "Segoe UI"),
+            "Microsoft YaHei UI",
+        )
+
+        # 先隐藏主窗口，等尺寸、内容与主题全部就绪后再显示：
+        # Tk 的 Toplevel/Root 创建时会先以默认小尺寸映射到父窗口左上角，
+        # 若先显示再居中，启动瞬间就会在屏幕左上角闪出一个小窗。
+        self._root_hidden_on_start = False
+        try:
+            root.withdraw()
+            self._root_hidden_on_start = True
+        except Exception:
+            pass
 
         root.title(f"{APP_NAME} v{VERSION}")
-        root.geometry("1180x700")
-        root.minsize(980, 600)
+        _center_window(root, 1500, 860, min_width=1100, min_height=700)
         self._set_icon()
 
-        self._build_style()
-        self._build_widgets()
-        self._apply_theme()
+        try:
+            self._build_style()
+            self._build_widgets()
+            self._apply_theme()
+        finally:
+            try:
+                self._install_resize_guard(root)
+            except Exception:
+                pass
+            # 尺寸、内容、图标与毛玻璃全部就绪后才真正显示，避免可见的跳变。
+            if self._root_hidden_on_start:
+                try:
+                    root.deiconify()
+                    root.lift()
+                except Exception:
+                    pass
 
     def _build_style(self):
         style = ttk.Style()
@@ -661,44 +971,83 @@ class App:
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("Treeview", rowheight=26, font=("Microsoft YaHei UI", 9),
+        style.configure("Treeview", rowheight=30, font=(self.font_family, 10),
                         borderwidth=0, relief="flat")
-        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"),
-                        padding=(4, 6))
+        style.configure("Treeview.Heading", font=(self.font_family, 10, "bold"),
+                        padding=(6, 8))
         style.map("Treeview.Heading", relief=[("active", "flat")])
-        style.configure("TButton", font=("Microsoft YaHei UI", 9), padding=6)
-        style.configure("Small.TButton", font=("Microsoft YaHei UI", 8), padding=(6, 2))
-        style.configure("TLabel", font=("Microsoft YaHei UI", 9))
-        style.configure("TCheckbutton", font=("Microsoft YaHei UI", 9))
-        style.configure("TRadiobutton", font=("Microsoft YaHei UI", 9))
-        style.configure("TLabelframe.Label", font=("Microsoft YaHei UI", 9, "bold"))
-        self._tree_font = tkfont.Font(family="Microsoft YaHei UI", size=9)
+        style.configure("TButton", font=(self.font_family, 10), padding=(12, 7))
+        style.configure("Small.TButton", font=(self.font_family, 9), padding=(8, 4))
+        style.configure("TLabel", font=(self.font_family, 10))
+        style.configure("TCheckbutton", font=(self.font_family, 10))
+        style.configure("TRadiobutton", font=(self.font_family, 10))
+        style.configure("TLabelframe.Label", font=(self.font_family, 10, "bold"))
+        self._tree_font = tkfont.Font(family=self.font_family, size=10)
+
+    def _header_min_width(self, text, fallback=60):
+        """保证表头文字有足够宽度，避免窗口缩放后标题重叠或被挤没。"""
+        try:
+            return max(int(fallback), self._tree_font.measure(str(text)) + 28)
+        except Exception:
+            return int(fallback)
+
+    def _configure_tree_columns(self, tree, columns, heads, widths, align=None):
+        """初始化 Treeview 列，并记录窗口缩放时使用的比例和表头最小宽度。"""
+        align = align or {}
+        columns = tuple(columns)
+        heads = tuple(heads)
+        min_widths = tuple(self._header_min_width(head, 52) for head in heads)
+        base_widths = tuple(max(int(width), min_width) for width, min_width in zip(widths, min_widths))
+        tree._autofit_meta = {
+            "columns": columns,
+            "bases": base_widths,
+            "mins": min_widths,
+        }
+        for column, head, width, min_width in zip(columns, heads, base_widths, min_widths):
+            anchor = align.get(column, "w")
+            tree.heading(column, text=head, anchor=anchor)
+            tree.column(column, width=width, minwidth=min_width, anchor=anchor, stretch=False)
+        tree.bind("<Configure>", lambda _event, tv=tree: self._autofit_tree_columns(tv), add="+")
+        try:
+            tree.after_idle(lambda: self._autofit_tree_columns(tree))
+        except Exception:
+            pass
+
+    def _autofit_tree_columns(self, tree):
+        """按窗口可用宽度等比分配列宽；窄窗口先保表头最小宽度，超宽时自动均分扩展。"""
+        try:
+            if not tree.winfo_exists():
+                return
+            meta = getattr(tree, "_autofit_meta", None)
+            if not meta:
+                return
+            columns = meta["columns"]
+            bases = meta["bases"]
+            mins = meta["mins"]
+            available = max(1, int(tree.winfo_width()) - 4)
+            min_total = sum(mins)
+            if available <= min_total:
+                widths = list(mins)
+            else:
+                extra = available - min_total
+                weights = [max(1, base - min_width) for base, min_width in zip(bases, mins)]
+                weight_total = sum(weights) or 1
+                widths = [min_width + int(extra * weight / weight_total)
+                          for min_width, weight in zip(mins, weights)]
+                remainder = available - sum(widths)
+                if remainder:
+                    widths[-1] += remainder
+            current = [int(float(tree.column(column, "width"))) for column in columns]
+            if current == widths:
+                return
+            for column, width, min_width in zip(columns, widths, mins):
+                tree.column(column, width=width, minwidth=min_width, stretch=False)
+        except Exception:
+            pass
 
     def _fit_tree_row(self, tree, columns, values):
-        """按单元格内容自动加宽列，避免长文本在列内被截断。"""
-        caps = {
-            "carrier": 700,
-            "location": 1000,
-            "judgments": 1800,
-            "categories": 1400,
-            "tags": 1400,
-            "file_name": 900,
-            "malware_type": 800,
-            "malware_family": 1000,
-            "permalink": 2800,
-        }
-        for column, value in zip(columns, values):
-            text_value = str(value or "")
-            if not text_value:
-                continue
-            try:
-                needed = self._tree_font.measure(text_value) + 28
-            except Exception:
-                needed = len(text_value) * 12 + 28
-            current = int(float(tree.column(column, "width")))
-            target = max(current, min(needed, caps.get(column, 1000)))
-            if target > current:
-                tree.column(column, width=target, stretch=False)
+        """列宽由窗口自适应统一管理，避免逐行加宽后表头互相覆盖。"""
+        return
 
     def _bind_horizontal_wheel(self, tree):
         """Shift + 鼠标滚轮横向滚动结果表；兼容部分鼠标的横向滚轮。"""
@@ -754,7 +1103,8 @@ class App:
                   foreground=[("active", t["select_fg"]), ("pressed", t["select_fg"]),
                               ("disabled", t["border"])])
         style.configure("TEntry", fieldbackground=t["field_bg"], foreground=t["field_fg"],
-                        insertcolor=t["field_fg"])
+                        insertcolor=t["field_fg"], bordercolor=t["border"],
+                        lightcolor=t["field_bg"], darkcolor=t["field_bg"], padding=(8, 6))
         style.configure("TPanedwindow", background=t["panel_bg"])
         style.configure("TNotebook", background=t["panel_bg"], borderwidth=0)
         style.configure("TNotebook.Tab", background=t["field_bg"], foreground=t["field_fg"],
@@ -792,24 +1142,109 @@ class App:
                     tv.tag_configure("mal", foreground=t["malice_fg"])
             except Exception:
                 pass
+        _apply_windows_material(self.root, bool(self.dark_var.get()))
+        try:
+            self.root.after(120, lambda: _apply_windows_material(
+                self.root, bool(self.dark_var.get())))
+        except Exception:
+            pass
+
+    def _install_resize_guard(self, window):
+        """Install resize anti-flicker handling for a top-level window."""
+        if getattr(window, "_tb_resize_guard", None):
+            return
+        window._tb_resize_guard = {"job": None, "suspended": False, "size": None}
+        window.bind(
+            "<Configure>",
+            lambda event, win=window: self._on_window_configure(win, event),
+            add="+",
+        )
+        try:
+            def _sync_size(win=window):
+                state = getattr(win, "_tb_resize_guard", None)
+                if state is not None and win.winfo_exists():
+                    state["size"] = (int(win.winfo_width()), int(win.winfo_height()))
+            window.after_idle(_sync_size)
+        except Exception:
+            pass
+
+    def _on_window_configure(self, window, event):
+        """Suspend translucent backdrop while resizing; restore after."""
+        if event.widget is not window:
+            return
+        state = getattr(window, "_tb_resize_guard", None)
+        if state is None:
+            return
+
+        size = (int(event.width), int(event.height))
+        last_size = state.get("size")
+        state["size"] = size
+        if last_size is None or size == last_size:
+            return
+
+        hwnd = getattr(window, "_tb_hwnd", None)
+        if hwnd and not state.get("suspended"):
+            _set_dwm_backdrop(hwnd, bool(self.dark_var.get()), enabled=False)
+            state["suspended"] = True
+
+        job = state.get("job")
+        if job:
+            try:
+                window.after_cancel(job)
+            except Exception:
+                pass
+        try:
+            state["job"] = window.after(
+                180, lambda win=window: self._finish_window_resize(win))
+        except Exception:
+            state["job"] = None
+
+    def _finish_window_resize(self, window):
+        """Restore Acrylic/Mica after continuous resizing has stopped."""
+        state = getattr(window, "_tb_resize_guard", None)
+        if state is None:
+            return
+        state["job"] = None
+        if not state.get("suspended"):
+            return
+        try:
+            if window.winfo_exists():
+                _apply_windows_material(window, bool(self.dark_var.get()))
+        finally:
+            state["suspended"] = False
 
     def _toggle_theme(self):
         self._apply_theme()
         self.save_cfg(silent=True)
 
-    def _set_icon(self):
-        """设置窗口 / 任务栏图标（打包与源码运行均可）。"""
+    def _apply_icon_to(self, window):
+        """设置指定窗口的标题栏、任务栏图标。"""
         try:
             if os.path.exists(APP_ICON_ICO):
-                self.root.iconbitmap(default=APP_ICON_ICO)
+                window.iconbitmap(APP_ICON_ICO)
         except Exception:
             pass
         try:
             if os.path.exists(APP_ICON_PNG):
-                self._icon_img = tk.PhotoImage(file=APP_ICON_PNG)
-                self.root.iconphoto(True, self._icon_img)
+                img = tk.PhotoImage(file=APP_ICON_PNG)
+                window.iconphoto(True, img)
+                self._icon_images.append(img)
         except Exception:
             pass
+        try:
+            window.update_idletasks()
+            _set_native_window_icon(window)
+        except Exception:
+            pass
+
+    def _set_icon(self):
+        """设置主窗口 / 任务栏图标（打包与源码运行均可）。"""
+        if not hasattr(self, "_icon_images"):
+            self._icon_images = []
+        self._apply_icon_to(self.root)
+        if not getattr(self, "_icon_late_scheduled", False):
+            self._icon_late_scheduled = True
+            self.root.after(120, lambda: self._apply_icon_to(self.root))
 
     def _build_widgets(self):
         # ---------- 配置 ----------
@@ -846,7 +1281,7 @@ class App:
         mid = ttk.LabelFrame(self.root, text="批量输入（IP、域名与文件哈希可混合；每行一个或用逗号/空格/分号分隔）", padding=10)
         mid.pack(fill="both", expand=False, padx=12, pady=6)
 
-        self.input_text = ScrolledText(mid, height=6, font=("Consolas", 10), wrap="word")
+        self.input_text = ScrolledText(mid, height=6, font=(self.font_family, 10), wrap="word")
         self.input_text.pack(fill="both", expand=True)
 
         btns = ttk.Frame(mid)
@@ -875,10 +1310,7 @@ class App:
         res_align = {"resource": "w", "verdict": "center", "carrier": "w",
                      "location": "w", "judgments": "w", "permalink": "w"}
         self.tree = ttk.Treeview(res_frame, columns=res_cols, show="headings", selectmode="browse")
-        for c, h, w in zip(res_cols, res_heads, res_widths):
-            self.tree.heading(c, text=h, anchor=res_align[c])
-            self.tree.column(c, width=w, anchor=res_align[c],
-                             stretch=False)
+        self._configure_tree_columns(self.tree, res_cols, res_heads, res_widths, res_align)
         rvs = ttk.Scrollbar(res_frame, orient="vertical", command=self.tree.yview)
         rhs = ttk.Scrollbar(res_frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=rvs.set, xscrollcommand=rhs.set)
@@ -905,10 +1337,7 @@ class App:
                     "severity": "center", "judgments": "w", "categories": "w",
                     "tags": "w", "permalink": "w"}
         self.domain_tree = ttk.Treeview(smp_frame, columns=dm_cols, show="headings", selectmode="browse")
-        for c, h, w in zip(dm_cols, dm_heads, dm_widths):
-            self.domain_tree.heading(c, text=h, anchor=dm_align[c])
-            self.domain_tree.column(c, width=w, anchor=dm_align[c],
-                                    stretch=False)
+        self._configure_tree_columns(self.domain_tree, dm_cols, dm_heads, dm_widths, dm_align)
         svs = ttk.Scrollbar(smp_frame, orient="vertical", command=self.domain_tree.yview)
         shs = ttk.Scrollbar(smp_frame, orient="horizontal", command=self.domain_tree.xview)
         self.domain_tree.configure(yscrollcommand=svs.set, xscrollcommand=shs.set)
@@ -938,10 +1367,7 @@ class App:
                       "file_type": "center", "malware_type": "w", "malware_family": "w",
                       "multi_engines": "center", "whitelist": "center", "permalink": "w"}
         self.file_tree = ttk.Treeview(file_frame, columns=file_cols, show="headings", selectmode="browse")
-        for c, h, w in zip(file_cols, file_heads, file_widths):
-            self.file_tree.heading(c, text=h, anchor=file_align[c])
-            self.file_tree.column(c, width=w, anchor=file_align[c],
-                                  stretch=False)
+        self._configure_tree_columns(self.file_tree, file_cols, file_heads, file_widths, file_align)
         fvs = ttk.Scrollbar(file_frame, orient="vertical", command=self.file_tree.yview)
         fhs = ttk.Scrollbar(file_frame, orient="horizontal", command=self.file_tree.xview)
         self.file_tree.configure(yscrollcommand=fvs.set, xscrollcommand=fhs.set)
@@ -1012,14 +1438,31 @@ class App:
             return
 
         win = tk.Toplevel(self.root)
+        # 先隐藏窗口再构建：Toplevel 默认会在屏幕左上角以原始尺寸短暂映射，
+        # 若先显示再居中，就会出现「左上角闪出一个小窗」的现象。
+        win.withdraw()
         self.cache_window = win
         win.title(f"本地缓存查看 - {APP_NAME} v{VERSION}")
-        win.geometry("1180x620")
-        win.minsize(820, 440)
         win.transient(self.root)
         win.protocol("WM_DELETE_WINDOW", self._close_cache_viewer)
+        _center_window(win, 1400, 780, min_width=900, min_height=540)
         self._build_cache_viewer(win)
+        self._apply_icon_to(win)
+        _apply_windows_material(win, bool(self.dark_var.get()))
+        self._install_resize_guard(win)
         self._refresh_cache_window()
+        # 尺寸、内容、图标与毛玻璃效果全部就绪后再显示，避免可见的跳变。
+        try:
+            win.deiconify()
+            win.lift()
+            win.focus_force()
+        except Exception:
+            pass
+        try:
+            win.after(120, lambda: self._apply_icon_to(win))
+            win.after(140, lambda: _apply_windows_material(win, bool(self.dark_var.get())))
+        except Exception:
+            pass
 
     def _build_cache_viewer(self, win):
         header = ttk.Frame(win)
@@ -1081,10 +1524,8 @@ class App:
 
     def _create_cache_tree(self, parent, key, cfg):
         tree = ttk.Treeview(parent, columns=cfg["columns"], show="headings", selectmode="browse")
-        for col, head, width in zip(cfg["columns"], cfg["heads"], cfg["widths"]):
-            anchor = cfg["align"].get(col, "w")
-            tree.heading(col, text=head, anchor=anchor)
-            tree.column(col, width=width, anchor=anchor, stretch=False)
+        self._configure_tree_columns(
+            tree, cfg["columns"], cfg["heads"], cfg["widths"], cfg["align"])
         vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
@@ -1657,7 +2098,9 @@ class App:
 
 def main():
     _set_app_user_model_id()
+    _enable_high_dpi_awareness()
     root = tk.Tk()
+    _setup_tk_fonts(root)
     App(root)
     root.mainloop()
 

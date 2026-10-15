@@ -8,7 +8,7 @@
 
 基于微步在线 ThreatBook API 构建，支持本地缓存查看、暗色模式、IP / 域名 / 文件哈希混合查询与结果导出。
 
-[![Release](https://img.shields.io/badge/release-v2.5.8-2563eb?style=for-the-badge)](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases)
+[![Release](https://img.shields.io/badge/release-v2.6.3-2563eb?style=for-the-badge)](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=for-the-badge&logo=windows)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.11-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-16a34a?style=for-the-badge)](LICENSE)
@@ -23,6 +23,12 @@
 它把微步在线的 IP 信誉接口、失陷检测接口（`/v3/scene/dns`）与文件报告接口（`/v3/file/report`）整合到一个轻量界面中，支持 IP、域名与文件哈希混合批量查询，并把常用结果美化、缓存和导出。已查询过的 IP / 域名 / 文件哈希会直接读取本地缓存，避免重复消耗 API 额度；新增的本地缓存查看窗口可以按类型浏览全部缓存记录，也可以随时一键清空。配置模块也已精简，只保留 API Key 与暗色模式，减少无效选项带来的干扰。
 
 > 默认不预置 API Key。首次启动为空，填写后点击「保存配置」即可长期生效。
+
+## v2.6.3 升级亮点
+
+- 适配 Windows 毛玻璃 / Acrylic 风格。
+- 启用 Per-Monitor DPI V2。
+- 优化高分屏字体清晰度。
 
 ## 界面预览
 
@@ -65,7 +71,7 @@
 前往 [Releases](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases/latest) 下载：
 
 ```text
-ThreatBookIPDomainFileReputation_v2.5.8.exe
+ThreatBookIPDomainFileReputation_v2.6.3.exe
 ```
 
 运行环境：Windows 10 / 11。
