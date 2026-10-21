@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import webbrowser
+from collections import deque
 from datetime import datetime
 
 import requests
@@ -41,8 +42,10 @@ FILE_API_URL = "https://api.threatbook.cn/v3/file/report"
 
 BATCH_SIZE = 100          # IP/域名接口单次上限
 NETWORK_MAX_ATTEMPTS = 3  # 网络临时异常自动重试次数（含首次请求）
+IP_RATE_LIMIT_PER_MINUTE = 60   # /v3/scene/ip_reputation 官方频次限制：60 次/分钟
+IP_RATE_LIMIT_WINDOW_SECONDS = 60
 APP_NAME = "微步IP/域名/文件信誉查询API调用"
-VERSION = "2.6.3"
+VERSION = "2.6.4"
 
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ThreatBookIPReputation")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
@@ -659,10 +662,38 @@ def _network_error_zh(exc):
     return "网络请求异常，请检查网络连接后重试"
 
 
+class _SlidingWindowRateLimiter:
+    """线程安全的滑动窗口限速器（按 HTTP 请求次数计时）。"""
+    def __init__(self, max_calls, window_seconds):
+        self._max_calls = max_calls
+        self._window = window_seconds
+        self._times = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._times and now - self._times[0] >= self._window:
+                    self._times.popleft()
+                if len(self._times) < self._max_calls:
+                    self._times.append(now)
+                    return
+                wait = self._window - (now - self._times[0])
+            time.sleep(min(max(wait, 0.05), self._window))
+
+
+_IP_RATE_LIMITER = _SlidingWindowRateLimiter(
+    IP_RATE_LIMIT_PER_MINUTE, IP_RATE_LIMIT_WINDOW_SECONDS
+)
+
+
 def _request_json(url, params, endpoint, timeout=30):
     """请求微步接口并解析 JSON；临时网络异常自动重试，最终返回中文错误。"""
     last_exc = None
     for attempt in range(1, NETWORK_MAX_ATTEMPTS + 1):
+        if url == IP_API_URL:
+            _IP_RATE_LIMITER.acquire()
         try:
             resp = requests.get(
                 url,

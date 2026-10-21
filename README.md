@@ -8,7 +8,7 @@
 
 基于微步在线 ThreatBook API 构建，支持本地缓存查看、暗色模式、IP / 域名 / 文件哈希混合查询与结果导出。
 
-[![Release](https://img.shields.io/badge/release-v2.6.3-2563eb?style=for-the-badge)](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases)
+[![Release](https://img.shields.io/badge/release-v2.6.4-2563eb?style=for-the-badge)](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=for-the-badge&logo=windows)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.11-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-16a34a?style=for-the-badge)](LICENSE)
@@ -24,11 +24,12 @@
 
 > 默认不预置 API Key。首次启动为空，填写后点击「保存配置」即可长期生效。
 
-## v2.6.3 升级亮点
+## v2.6.4 升级亮点
 
-- 适配 Windows 毛玻璃 / Acrylic 风格。
-- 启用 Per-Monitor DPI V2。
-- 优化高分屏字体清晰度。
+- `/v3/scene/ip_reputation` 遵守官方 **60 次/分钟** 频次限制，新增客户端滑动窗口限速。
+- 每次实际 HTTP 请求（含自动重试）都会占用额度，避免超频失败请求仍消耗调用次数。
+- 仅 IP 信誉接口限速，域名（`/v3/scene/dns`）与文件（`/v3/file/report`）查询不受影响。
+- 继承 v2.6.3 的 Windows 毛玻璃 / Acrylic 风格、Per-Monitor DPI V2 与高分屏字体清晰度优化。
 
 ## 界面预览
 
@@ -71,7 +72,7 @@
 前往 [Releases](https://github.com/UncleBlog/threatbook-ip-domain-reputation/releases/latest) 下载：
 
 ```text
-ThreatBookIPDomainFileReputation_v2.6.3.exe
+ThreatBookIPDomainFileReputation_v2.6.4.exe
 ```
 
 运行环境：Windows 10 / 11。
@@ -106,6 +107,7 @@ ThreatBookIPDomainFileReputation_v2.6.3.exe
 
 > 域名侧展示 `is_malicious`、`confidence_level`、`severity`、`judgments`、`tags_classes`、`categories`、`permalink`。<br>
 > 文件侧展示 `summary`、`multiengines` 与 `permalink`。<br>
+> `/v3/scene/ip_reputation` 官方频次限制为 **60 次/分钟**，程序已内置客户端限速。
 > 接口需要在微步控制台为当前 API Key 开通对应权限，否则会返回权限错误。
 
 ## 从源码构建
